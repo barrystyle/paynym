@@ -5,12 +5,71 @@
 package main
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha512"
 	"fmt"
+	"math/big"
 
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcutil/base58"
 )
+
+type PaymentCode struct {
+	Version   byte
+	Sign      byte
+	Pubkey    [32]byte
+	Chaincode [32]byte
+}
+
+func (p *PaymentCode) Bytes() []byte {
+	var x bytes.Buffer
+	x.WriteByte(p.Version)
+	x.WriteByte(0x00)
+	x.WriteByte(p.Sign)
+	x.Write(p.Pubkey[:])
+	x.Write(p.Chaincode[:])
+	for i := 0; i < 13; i++ {
+		x.WriteByte(0x00)
+	}
+	return x.Bytes()
+}
+
+var Curve *btcec.KoblitzCurve = btcec.S256()
+
+func create_paynym_address(senderPriv, recipientPub, chaincode []byte, outpoint []byte) string {
+
+	senderI := new(big.Int)
+	recipientI := new(big.Int)
+	senderI.SetBytes(senderPriv)
+	recipientI.SetBytes(recipientPub)
+	secPointX, secPointY := Curve.ScalarMult(senderI, recipientI, make([]byte, 33))
+
+	hmacHash := hmac.New(sha512.New, []byte(secPointX.String()))
+	hmacHash.Write(outpoint[:])
+
+	// generate
+	var paymentCode PaymentCode
+	paymentCode.Version = byte(0x01)
+	paymentCode.Sign = 0x02
+	if secPointY.Bit(0) == 1 {
+		paymentCode.Sign = 0x03
+	}
+
+	// obfuscate
+	for i, val := range hmacHash.Sum(nil)[32:63] {
+		paymentCode.Chaincode[i] = chaincode[i] ^ val
+	}
+	for i, val := range hmacHash.Sum(nil)[0:31] {
+		paymentCode.Pubkey[i] = chaincode[i] ^ val
+	}
+
+	versionByte := byte(0x47)
+	paymentCodeBytes := paymentCode.Bytes()
+	return base58.CheckEncode(paymentCodeBytes, versionByte)
+}
 
 func is_paynym_address(address string) bool {
 
